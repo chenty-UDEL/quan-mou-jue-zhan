@@ -1,17 +1,18 @@
 // api/start-game.js - Vercel Serverless Function
 import { supabase } from '../lib/supabaseClient';
 
-// 固定的简单角色配置 (为了V0.2快速测试，我们只用6个角色)
+// V0.2 角色配置
 const V02_ROLES = [
-    [cite_start]'技能观测者', // Skill Observer [cite: 20]
-    [cite_start]'利他守护者', // Altruistic Guardian [cite: 21]
-    [cite_start]'沉默制裁者', // Silence Sanctioner [cite: 23]
-    [cite_start]'投票阻断者', // Vote Blocker [cite: 22]
-    [cite_start]'双票使者',   // Double Voter (Passive) [cite: 26]
-    [cite_start]'三人王者',   // Three Kings (Special Win Condition) [cite: 30]
+    '技能观测者', 
+    '利他守护者', 
+    '沉默制裁者', 
+    '投票阻断者', 
+    '双票使者',   
+    '三人王者', 
+    // 为了支持更多人，我们可以重复添加或者添加更多角色
+    '平民', '平民', '平民', '平民', '平民', '平民', '平民'  
 ];
 
-// 简单的Fisher-Yates洗牌算法
 const shuffle = (array) => {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -33,30 +34,32 @@ export default async function handler(req, res) {
         .eq('room_code', roomCode);
 
     if (playersError || !players) {
-        return res.status(500).json({ error: playersError.message });
+        return res.status(500).json({ error: playersError?.message || '无法获取玩家列表' });
     }
 
     const numPlayers = players.length;
 
-    [cite_start]// 验证人数：权谋决战要求 6-13 人 [cite: 5]
-    if (numPlayers < 6) {
-        return res.status(400).json({ message: '人数不足 6 人，无法开始游戏。' });
+    // --- 修改点：验证人数改为 2 人 ---
+    if (numPlayers < 2) {
+        return res.status(400).json({ message: '人数不足 2 人，无法开始游戏。' });
     }
 
     // 2. 准备角色池并洗牌
-    let rolesToAssign = V02_ROLES.slice(0, numPlayers); // 只取所需数量的角色
-    if (rolesToAssign.length < numPlayers) {
-        // 如果玩家多于角色池，这里需要补充普通角色，但V0.2我们假设玩家不会超过6人
-        // 生产环境应该从V02_ROLES中循环或添加通用角色
+    // 确保角色池够用
+    let availableRoles = [...V02_ROLES];
+    if (numPlayers > availableRoles.length) {
+         // 如果人太多，角色不够，补充平民
+         const diff = numPlayers - availableRoles.length;
+         for(let i=0; i<diff; i++) availableRoles.push('平民');
     }
+
+    let rolesToAssign = availableRoles.slice(0, numPlayers); 
     shuffle(rolesToAssign);
 
     const updates = players.map((player, index) => ({
         id: player.id,
         role: rolesToAssign[index],
-        // 重置状态
         is_alive: true,
-        role_skill: null, // 可以在这里设置角色的初始技能状态
     }));
 
     // 3. 更新玩家角色
@@ -72,5 +75,5 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: updateError?.message || roomUpdateError?.message });
     }
 
-    res.status(200).json({ success: true, message: '游戏已开始，进入夜晚阶段。' });
+    res.status(200).json({ success: true, message: '游戏已开始' });
 }
