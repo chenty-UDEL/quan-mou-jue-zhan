@@ -1,4 +1,4 @@
-// api/process-night.js - V0.4 修正版 (控制优先/无夜间死亡)
+// api/process-night.js - V0.7 升级版 (支持同盟/影子/沉默不禁技能)
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -8,7 +8,6 @@ const supabase = createClient(
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ message: 'Method Not Allowed' });
-
     const { roomCode } = req.body;
 
     // 1. 获取数据
@@ -17,129 +16,134 @@ export default async function handler(req, res) {
 
     if (!players || !actions) return res.status(500).json({ message: '读取数据失败' });
 
-    // 2. 初始化更新容器
     let updates = {}; 
     let logs = [];
     
-    // 用 Set 记录本回合被废掉技能的玩家 ID
-    let disabledActorIds = new Set();
-
+    // 2. 初始化 updates 对象
+    // 【关键修改】我们需要保留之前的 flags (因为同盟/影子是永久绑定的)
+    // 但必须清除"临时状态" (如今晚的守护、禁言)
     players.forEach(p => {
+        const currentFlags = p.flags || {};
+        
+        // 创建一个新的 flags 对象，保留永久状态，移除临时状态
+        const newFlags = { ...currentFlags };
+        delete newFlags.is_protected; // 移除昨晚的守护
+        delete newFlags.is_silenced;  // 移除昨晚的禁言
+        delete newFlags.cannot_vote;  // 移除昨晚的禁票
+
         updates[p.id] = { 
-            ...p, // <--- 【关键修复】保留玩家原有的名字、房间号等所有信息
-            flags: {}, // 重置每晚的标记
-            // 注意：这里我们只重置 flags，不重置 is_alive，除非后面有逻辑将其改为 false
+            ...p, // 保留名字、角色等基础信息
+            flags: newFlags
         };
     });
 
-    // --- 核心结算逻辑 (严格遵循优先级) ---
+    // --- 3. 核心结算逻辑 ---
 
-    // 🚫 优先级 1: 限制与干扰 (Silence / Block Vote)
-    // 逻辑：先结算这些技能，如果生效，被指名的玩家不仅获得负面状态，且"当晚技能失效"
-    const controlActions = actions.filter(a => ['silence', 'block_vote'].includes(a.action_type));
-    
-    controlActions.forEach(action => {
+    // A. 限制类 (沉默/禁票)
+    // 逻辑：只给目标挂状态，不影响目标发动技能
+    actions.filter(a => ['silence', 'block_vote'].includes(a.action_type)).forEach(action => {
         const target = updates[action.target_id];
         if (target) {
-            // 1.1 施加负面状态 (影响第二天白天)
             if (action.action_type === 'block_vote') {
                 target.flags.cannot_vote = true;
                 logs.push({ 
                     message: '你感到一股无形的力量阻止了你，明天你将无法投票。', 
-                    viewer_ids: [action.target_id], tag: 'PRIVATE' 
+                    viewer_ids: [action.target_id], 
+                    tag: 'PRIVATE' 
                 });
             }
             if (action.action_type === 'silence') {
                 target.flags.is_silenced = true;
-                // 关键逻辑：如果被沉默，他今晚的技能也同时失效（Role Block）
-                disabledActorIds.add(action.target_id); 
-                
                 logs.push({ 
-                    message: '你被【沉默制裁者】封印了！你今晚的技能失效，且明天无法发言。', 
-                    viewer_ids: [action.target_id], tag: 'PRIVATE' 
+                    message: '你被【沉默制裁者】禁言了！明天白天无法发言，但你的技能依然生效。', 
+                    viewer_ids: [action.target_id], 
+                    tag: 'PRIVATE' 
                 });
             }
         }
     });
 
-    // 🛡️ 优先级 2: 防御构建 (Protect)
-    // 逻辑：只有没被"沉默/封印"的守护者，技能才生效
-    const protectActions = actions.filter(a => a.action_type === 'protect');
-    
-    protectActions.forEach(action => {
-        // 检查：守护者是否被废了？
-        if (disabledActorIds.has(action.actor_id)) {
-            // 被沉默了，技能无效，跳过
-            return; 
-        }
-
+    // B. 防御类 (守护)
+    actions.filter(a => a.action_type === 'protect').forEach(action => {
         const target = updates[action.target_id];
         if (target) {
-            target.flags.is_protected = true; // 标记无敌 (用于白天抵消票数)
-            
-            // 守护者收到成功反馈
-            logs.push({
-                message: `你成功守护了玩家 ${action.target_id}，他明天将免疫投票。`,
-                viewer_ids: [action.actor_id], tag: 'PRIVATE'
+            target.flags.is_protected = true;
+            logs.push({ 
+                message: `你成功守护了玩家 ${action.target_id}，他明天将免疫投票。`, 
+                viewer_ids: [action.actor_id], 
+                tag: 'PRIVATE' 
             });
         }
     });
 
-    // 👁️ 优先级 3: 信息获取 (Check)
-    // 逻辑：同样受沉默影响
-    const checkActions = actions.filter(a => a.action_type === 'check');
-    
-    checkActions.forEach(action => {
-        // 检查：观测者是否被废了？
-        if (disabledActorIds.has(action.actor_id)) {
-            return; 
+    // C. 永久绑定类 (同盟/影子) - 这些技能通常只在第一夜发动
+    actions.filter(a => ['ally_bind', 'shadow_bind'].includes(a.action_type)).forEach(action => {
+        const actor = updates[action.actor_id];
+        if (actor) {
+            if (action.action_type === 'ally_bind') {
+                actor.flags.ally_id = action.target_id;
+                logs.push({ 
+                    message: `契约已成！你已与玩家 ${action.target_id} 结为同盟。`, 
+                    viewer_ids: [action.actor_id], 
+                    tag: 'PRIVATE' 
+                });
+            }
+            if (action.action_type === 'shadow_bind') {
+                actor.flags.shadow_target_id = action.target_id;
+                logs.push({ 
+                    message: `目标锁定！你已选定玩家 ${action.target_id} 为你的影子目标。`, 
+                    viewer_ids: [action.actor_id], 
+                    tag: 'PRIVATE' 
+                });
+            }
         }
+    });
 
+    // D. 信息类 (查验)
+    actions.filter(a => a.action_type === 'check').forEach(action => {
         const targetPlayer = players.find(p => p.id === action.target_id);
         if (targetPlayer) {
-            logs.push({
-                message: `观测结果：玩家【${targetPlayer.name}】的身份是【${targetPlayer.role}】。`,
-                viewer_ids: [action.actor_id], tag: 'PRIVATE'
+            logs.push({ 
+                message: `观测结果：玩家【${targetPlayer.name}】的身份是【${targetPlayer.role}】。`, 
+                viewer_ids: [action.actor_id], 
+                tag: 'PRIVATE' 
             });
         }
     });
 
-    // 📝 优先级 4: 生成公共公告 (没有死亡)
-    // 根据规则，夜晚不死人，只可能有状态变化
-    // 这里可以统计一下有多少人被禁言（但不说是谁），增加紧张感
+    // --- 4. 生成公告 ---
     const silencedCount = Object.values(updates).filter(u => u.flags.is_silenced).length;
-    let publicMsg = '天亮了，昨晚风平浪静。';
-    if (silencedCount > 0) {
-        publicMsg = `天亮了。昨晚有 ${silencedCount} 名玩家遭遇了神秘力量的干扰（被禁言/封印）。`;
-    }
-
     logs.push({
-        message: publicMsg,
-        viewer_ids: null, // 公开
+        message: silencedCount > 0 ? `天亮了。昨晚有 ${silencedCount} 名玩家被禁言。` : '天亮了，昨晚风平浪静。',
+        viewer_ids: null, 
         tag: 'PUBLIC'
     });
 
-    // --- 提交更改 ---
-
-    // 1. 更新玩家状态
+    // --- 5. 提交数据库 ---
     const playerUpdates = Object.values(updates);
     const { error: updateError } = await supabase.from('players').upsert(playerUpdates);
-
-    // 2. 插入日志
+    
     if (logs.length > 0) {
-        const logsPayload = logs.map(l => ({
-            room_code: roomCode,
-            message: l.message,
-            viewer_ids: l.viewer_ids,
-            tag: l.tag,
-            round_number: 1 // TODO: 需动态获取
+        const logsPayload = logs.map(l => ({ 
+            room_code: roomCode, 
+            message: l.message, 
+            viewer_ids: l.viewer_ids, 
+            tag: l.tag 
         }));
         await supabase.from('game_logs').insert(logsPayload);
     }
+    
+    // 切换到白天 (尝试解析当前回合数)
+    const { data: currentRoom } = await supabase.from('rooms').select('round_state').eq('code', roomCode).single();
+    let nextRoundStr = 'DAY 1';
+    if (currentRoom) {
+        // 如果是 NIGHT 1 -> DAY 1, NIGHT 2 -> DAY 2
+        const roundNum = parseInt(currentRoom.round_state.split(' ')[1]) || 1;
+        nextRoundStr = `DAY ${roundNum}`;
+    }
 
-    // 3. 切换到白天
-    await supabase.from('rooms').update({ round_state: 'DAY 1' }).eq('code', roomCode);
+    await supabase.from('rooms').update({ round_state: nextRoundStr }).eq('code', roomCode);
 
     if (updateError) return res.status(500).json({ error: updateError.message });
-    res.status(200).json({ success: true, message: '结算完成，进入白天' });
+    res.status(200).json({ success: true, message: '结算完成' });
 }
