@@ -40,13 +40,13 @@ const ROLE_CONFIG: Record<string, { type: string; tag: string; desc: string }> =
 };
 
 // ==========================================
-// 2. 游戏说明书组件 (GameManual) - 已修复类型报错
+// 2. 游戏说明书组件 (GameManual) - 已清理引用标记
 // ==========================================
 function GameManual() {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'rules' | 'roles'>('rules');
 
-  // 【修复重点】显式声明样式对象的类型，或使用 as React.CSSProperties
+  // 样式定义
   const styles = {
     trigger: {
       position: 'fixed', top: '20px', right: '20px', zIndex: 9999,
@@ -59,7 +59,7 @@ function GameManual() {
       fontWeight: 'bold',
       transition: 'transform 0.2s', 
       border: '1px solid #fcd34d'
-    } as React.CSSProperties, // <--- 强制转换为 CSS 属性类型
+    } as React.CSSProperties,
 
     overlay: {
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
@@ -73,7 +73,7 @@ function GameManual() {
       width: '90%', maxWidth: '600px', maxHeight: '85vh',
       borderRadius: '16px', 
       display: 'flex', 
-      flexDirection: 'column', // 这里不再报错，因为已指定为 CSSProperties
+      flexDirection: 'column', 
       overflow: 'hidden',
       boxShadow: '0 20px 50px rgba(0,0,0,0.5)', border: '1px solid #374151'
     } as React.CSSProperties,
@@ -82,7 +82,6 @@ function GameManual() {
       display: 'flex', background: '#111827', borderBottom: '1px solid #374151' 
     } as React.CSSProperties,
 
-    // 函数返回类型也显式声明
     tabBtn: (isActive: boolean): React.CSSProperties => ({
       flex: 1, padding: '15px', border: 'none', background: isActive ? '#1f2937' : 'transparent',
       color: isActive ? '#fcd34d' : '#9ca3af', fontWeight: 'bold', cursor: 'pointer',
@@ -125,13 +124,15 @@ function GameManual() {
               {activeTab === 'rules' ? (
                 <div>
                   <h3 style={{marginTop:0, borderBottom:'1px solid #374151', paddingBottom:'10px', color:'#fcd34d'}}>⚖️ 权谋决战规则</h3>
-                  <p><strong>1. [cite_start]胜利条件 [cite: 16-18]</strong></p>
+                  {/* 已删除 [cite] 标记 */}
+                  <p><strong>1. 胜利条件</strong></p>
                   <ul style={{paddingLeft:'20px', color:'#d1d5db'}}>
                     <li>🏆 <strong>特殊胜利 (3分)</strong>：达成角色特定条件立即独赢。</li>
                     <li>🤝 <strong>普通胜利 (1分)</strong>：存活到只剩 2 人时，共同获胜。</li>
                     <li>☠️ <strong>死局</strong>：连续 3 次僵局，游戏重置。</li>
                   </ul>
-                  <p><strong>2. [cite_start]核心流程 [cite: 6-12]</strong></p>
+                  {/* 已删除 [cite] 标记 */}
+                  <p><strong>2. 核心流程</strong></p>
                   <ul style={{paddingLeft:'20px', color:'#d1d5db'}}>
                     <li>🌙 <strong>夜晚</strong>：发动技能（如观测、同盟）。</li>
                     <li>☀️ <strong>白天</strong>：公开讨论。</li>
