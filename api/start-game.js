@@ -1,16 +1,10 @@
-
-// api/start-game.js - Vercel Serverless Function
 import { createClient } from '@supabase/supabase-js';
 
-// 初始化 Service Role Client
-// Vercel 会自动读取我们设置的环境变量 process.env.NEXT_PUBLIC_SUPABASE_URL
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-// ！！！使用秘密密钥，它只在后端运行，前端无法访问
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY; 
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY); 
-// 替换了原来的从 lib/supabaseClient 导入的方式
-// ... (保留 V02_ROLES, shuffle 等代码)
+// 使用 Vercel 环境变量中的 Service Key (超级管理员权限)
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL, 
+    process.env.SUPABASE_SERVICE_KEY
+);
 
 // V0.2 角色配置
 const V02_ROLES = [
