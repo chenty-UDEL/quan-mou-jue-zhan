@@ -15,7 +15,7 @@ interface Player {
 
 interface RoomState {
     code: string;
-    round_state: string; // 例如: "LOBBY", "NIGHT 1", "DAY 1"
+    round_state: string; 
 }
 
 export default function Home() {
@@ -27,28 +27,27 @@ export default function Home() {
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [error, setError] = useState('');
 
-  // V0.3 新增状态: 行动相关
-  const [selectedTargetId, setSelectedTargetId] = useState<string>(''); // 选中的目标ID
-  const [hasActed, setHasActed] = useState(false); // 本回合是否已行动
+  // 行动相关
+  const [selectedTargetId, setSelectedTargetId] = useState<string>(''); 
+  const [hasActed, setHasActed] = useState(false); 
   const [actionLoading, setActionLoading] = useState(false);
 
   // --- 辅助函数 ---
   const getMyPlayer = () => players.find(p => p.name === name);
   const getMyRole = () => getMyPlayer()?.role;
+  const isHost = getMyPlayer()?.is_host; // 判断是否房主
   
-  // 根据角色获取对应的技能代号 (Action Type)
   const getActionType = (role: string) => {
       switch (role) {
           case '技能观测者': return 'check';
           case '利他守护者': return 'protect';
           case '沉默制裁者': return 'silence';
           case '投票阻断者': return 'block_vote';
-          // 如果有杀手角色，这里加 case '刺客': return 'kill';
-          default: return null; // 无技能角色
+          default: return null; 
       }
   };
 
-  // --- 核心功能: 提交技能行动 ---
+  // --- 核心功能 1: 玩家提交技能 ---
   const handleSubmitAction = async () => {
       const me = getMyPlayer();
       if (!me || !me.role) return;
@@ -67,14 +66,14 @@ export default function Home() {
                   actorId: me.id,
                   targetId: parseInt(selectedTargetId),
                   actionType: type,
-                  roundNumber: 1 // V0.4我们会动态获取当前回合数
+                  roundNumber: 1 
               })
           });
           
           if (!res.ok) throw new Error('提交失败');
           
-          setHasActed(true); // 锁定按钮
-          setError(''); // 清空错误
+          setHasActed(true); 
+          setError(''); 
       } catch (err) {
           setError('行动提交出错，请重试');
       } finally {
@@ -82,10 +81,23 @@ export default function Home() {
       }
   };
 
-  // --- 原有逻辑保持不变 ---
+  // --- 核心功能 2: 房主强制结算 (天亮了) ---
+  const handleProcessNight = async () => {
+      if (!confirm('确定要结束夜晚并进行结算吗？所有人的技能都将生效。')) return;
+      try {
+          const res = await fetch('/api/process-night', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ roomCode }),
+          });
+          if (!res.ok) throw new Error('结算失败');
+      } catch (err) { alert('结算请求失败'); }
+  };
+
+  // --- 基础房间逻辑 ---
   const handleStartGame = async () => {
       setError('');
-      if (players.length < 2) return setError('人数不足 2 人'); // 保持测试模式
+      if (players.length < 2) return setError('人数不足 2 人'); 
       try {
           await fetch('/api/start-game', {
               method: 'POST',
@@ -95,10 +107,6 @@ export default function Home() {
       } catch (err: any) { setError(err.message); }
   };
 
-  // ... (Create/Join/Fetch 逻辑与 V0.2 相同，为节省篇幅省略，逻辑不变)
-  // 实际上这里你需要把 V0.2 的 createRoom, joinRoom, fetchPlayers 等完整逻辑保留
-  // 为了确保你能直接运行，下面是完整的精简版 create/join 逻辑:
-  
   const createRoom = async () => { 
     if(!name) return setError('请输入名字');
     const code = Math.floor(1000+Math.random()*9000).toString();
@@ -130,6 +138,7 @@ export default function Home() {
     const ch1 = supabase.channel('room').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}`}, (payload) => {
         setRoomState(payload.new as RoomState);
         setHasActed(false); // 新阶段开始，重置行动状态
+        fetchPlayers(roomCode); // 刷新玩家状态（如被禁言标记）
     }).subscribe();
     const ch2 = supabase.channel('players').on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${roomCode}`}, () => fetchPlayers(roomCode)).subscribe();
     return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
@@ -141,8 +150,6 @@ export default function Home() {
     const myRole = getMyRole();
     const isNight = roomState?.round_state.startsWith('NIGHT');
     const actionType = myRole ? getActionType(myRole) : null;
-    
-    // 过滤出活着的人作为目标 (排除自己，除非技能允许对自己用，这里暂时简化为排除自己)
     const availableTargets = players.filter(p => p.is_alive && p.name !== name);
 
     return (
@@ -157,57 +164,46 @@ export default function Home() {
                 <p className="text-2xl font-bold text-yellow-300">{myRole || '...'}</p>
             </div>
 
-            {/* --- V0.3 核心: 技能操作区域 --- */}
-            {isNight && actionType ? (
+            {/* 技能操作区 (仅夜晚显示) */}
+            {isNight && actionType && (
                 <div className="bg-gray-900 p-4 rounded-lg border border-gray-600">
                     <h3 className="text-lg font-bold text-purple-400 mb-3">技能发动</h3>
-                    
                     {hasActed ? (
-                        <div className="text-green-400 font-bold py-4">
-                            ✅ 技能已提交，等待天亮...
-                        </div>
+                        <div className="text-green-400 font-bold py-4">✅ 技能已提交</div>
                     ) : (
                         <div className="space-y-3">
-                            <p className="text-sm text-gray-400">选择目标进行: <span className="text-white font-bold">{actionType.toUpperCase()}</span></p>
-                            
-                            {/* 目标选择下拉框 */}
                             <select 
-                                className="w-full p-3 rounded bg-gray-800 text-white border border-gray-600 focus:border-blue-500"
+                                className="w-full p-3 rounded bg-gray-800 text-white border border-gray-600"
                                 value={selectedTargetId}
                                 onChange={(e) => setSelectedTargetId(e.target.value)}
                             >
                                 <option value="">-- 选择目标 --</option>
-                                {availableTargets.map(p => (
-                                    <option key={p.id} value={p.id}>{p.name}</option>
-                                ))}
+                                {availableTargets.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
                             </select>
-
-                            {/* 提交按钮 */}
-                            <button 
-                                onClick={handleSubmitAction}
-                                disabled={actionLoading}
-                                className={`w-full p-3 rounded font-bold transition ${
-                                    actionLoading ? 'bg-gray-600' : 'bg-purple-600 hover:bg-purple-700'
-                                }`}
-                            >
+                            <button onClick={handleSubmitAction} disabled={actionLoading} className="w-full bg-purple-600 hover:bg-purple-700 p-3 rounded font-bold">
                                 {actionLoading ? '提交中...' : '确认发动'}
                             </button>
                         </div>
                     )}
                 </div>
-            ) : (
-                // 如果是平民或无技能角色
-                isNight && (
-                    <div className="text-gray-500 italic p-4">
-                        你今晚没有可用的主动技能，请耐心等待。
-                    </div>
-                )
+            )}
+
+            {/* --- 🔴 房主专用：天亮了按钮 (这部分你之前可能漏了) --- */}
+            {isHost && isNight && (
+                <div className="mt-8 border-t border-gray-600 pt-4">
+                    <button 
+                        onClick={handleProcessNight}
+                        className="w-full bg-red-800 hover:bg-red-900 text-white p-4 rounded-lg font-bold border border-red-500 shadow-lg transform hover:scale-105 transition"
+                    >
+                        🌕 天亮了 (结算并进入白天)
+                    </button>
+                </div>
             )}
         </div>
     );
   };
 
-  // --- 登录/大厅视图 (保持不变) ---
+  // 登录/大厅视图
   if (!isInRoom) return (
       <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
         <h1 className="text-4xl font-bold mb-8 text-yellow-500">权谋决战</h1>
