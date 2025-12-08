@@ -62,9 +62,9 @@ export default async function handler(req, res) {
     shuffle(rolesToAssign);
 
     const updates = players.map((player, index) => ({
-        id: player.id,
-        role: rolesToAssign[index],
-        is_alive: true,
+    ...player, // <--- 【关键修复】这行代码会保留原有的 name, room_code 等所有信息
+    role: rolesToAssign[index],
+    is_alive: true,
     }));
 
     // 3. 更新玩家角色
