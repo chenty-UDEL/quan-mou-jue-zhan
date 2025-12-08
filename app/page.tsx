@@ -1,9 +1,173 @@
-'use client'; 
+'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
-// --- 1. 类型定义 ---
+// ==========================================
+// 1. 游戏配置数据
+// ==========================================
+const ROLES = [
+  // 1. 基础与主动技能类
+  '技能观测者', '利他守护者', '投票阻断者', '沉默制裁者', '同盟者',
+  // 2. 被动数值与防御类
+  '减票守护者', '双票使者',
+  // 3. 特殊胜利 - 状态/局面类
+  '三人王者', '集票胜者', '平票赢家', '影子胜者', 
+  // 4. 特殊胜利 - 历史计数器类
+  '平票终结者', '免票胜者', '票数平衡者', '多选胜者' 
+];
+
+const ROLE_CONFIG: Record<string, { type: string; tag: string; desc: string }> = {
+  // --- 主动与控制 ---
+  '技能观测者': { type: 'active', tag: '查验', desc: '每晚指定一名玩家，查看其技能。' },
+  '利他守护者': { type: 'active', tag: '守护', desc: '每晚选一人(非自己)，令其第二天白天得票数为0。' },
+  '投票阻断者': { type: 'active', tag: '控制', desc: '指定一名玩家，使其本轮投票无效。' },
+  '沉默制裁者': { type: 'active', tag: '控制', desc: '指定一名玩家，使其本轮无法发言。' },
+  '同盟者':     { type: 'active', tag: '绑定', desc: '仅首夜。与指定玩家互投无效；若共投一人，额外+1票。' },
+  // --- 被动与防御 ---
+  '减票守护者': { type: 'passive', tag: '防御', desc: '你被投票时，最终总得票数自动 -1。' },
+  '双票使者':   { type: 'passive', tag: '攻击', desc: '你投出的每一票均计为 2 票。' },
+  // --- 局面型胜利 ---
+  '三人王者':   { type: 'situation', tag: '生存', desc: '当场上仅剩 3 名玩家时，你立即获胜。' },
+  '集票胜者':   { type: 'situation', tag: '爆发', desc: '单轮得票数 ≥ ⌈总人数 × 2/3⌉ 时，立即获胜。' },
+  '平票赢家':   { type: 'situation', tag: '博弈', desc: '当你与其他玩家平票时，立即获胜。' },
+  '影子胜者':   { type: 'situation', tag: '预判', desc: '首夜定。若你在目标出局的前后一轮内出局，你获胜。' },
+  // --- 计数型胜利 ---
+  '平票终结者': { type: 'counter', tag: '僵局', desc: '若场上连续 ⌈总人数 ÷ 3⌉ 局出现平票，立即获胜。' },
+  '免票胜者':   { type: 'counter', tag: '潜伏', desc: '若连续 ⌈总人数 ÷ 3⌉ 局未收到任何投票，立即获胜。' },
+  '票数平衡者': { type: 'counter', tag: '控票', desc: '若连续 ⌈总人数 ÷ 2⌉ 局得票数恰好相同，立即获胜。' },
+  '多选胜者':   { type: 'counter', tag: '连杀', desc: '连续 ⌈总人数 ÷ 3⌉ 轮投死不同人，立即获胜。' },
+};
+
+// ==========================================
+// 2. 游戏说明书组件 (GameManual) - 已修复类型报错
+// ==========================================
+function GameManual() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'rules' | 'roles'>('rules');
+
+  // 【修复重点】显式声明样式对象的类型，或使用 as React.CSSProperties
+  const styles = {
+    trigger: {
+      position: 'fixed', top: '20px', right: '20px', zIndex: 9999,
+      background: 'linear-gradient(135deg, #d97706 0%, #dc2626 100%)',
+      color: 'white', 
+      padding: '10px 20px', 
+      borderRadius: '30px',
+      boxShadow: '0 4px 15px rgba(0,0,0,0.5)', 
+      cursor: 'pointer', 
+      fontWeight: 'bold',
+      transition: 'transform 0.2s', 
+      border: '1px solid #fcd34d'
+    } as React.CSSProperties, // <--- 强制转换为 CSS 属性类型
+
+    overlay: {
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(5px)',
+      display: isOpen ? 'flex' : 'none', 
+      alignItems: 'center', justifyContent: 'center', zIndex: 10000
+    } as React.CSSProperties,
+
+    card: {
+      background: '#1f2937', color: '#f3f4f6',
+      width: '90%', maxWidth: '600px', maxHeight: '85vh',
+      borderRadius: '16px', 
+      display: 'flex', 
+      flexDirection: 'column', // 这里不再报错，因为已指定为 CSSProperties
+      overflow: 'hidden',
+      boxShadow: '0 20px 50px rgba(0,0,0,0.5)', border: '1px solid #374151'
+    } as React.CSSProperties,
+
+    tabHeader: { 
+      display: 'flex', background: '#111827', borderBottom: '1px solid #374151' 
+    } as React.CSSProperties,
+
+    // 函数返回类型也显式声明
+    tabBtn: (isActive: boolean): React.CSSProperties => ({
+      flex: 1, padding: '15px', border: 'none', background: isActive ? '#1f2937' : 'transparent',
+      color: isActive ? '#fcd34d' : '#9ca3af', fontWeight: 'bold', cursor: 'pointer',
+      borderTop: isActive ? '3px solid #fcd34d' : '3px solid transparent', transition: 'all 0.2s'
+    }),
+
+    content: { 
+      padding: '24px', overflowY: 'auto', lineHeight: 1.6 
+    } as React.CSSProperties,
+
+    badge: (type: string): React.CSSProperties => {
+      const colors: Record<string, string> = { active: '#dc2626', passive: '#2563eb', situation: '#d97706', counter: '#7c3aed' };
+      return {
+        display: 'inline-block', padding: '2px 8px', borderRadius: '4px', fontSize: '12px',
+        color: 'white', marginRight: '8px', verticalAlign: 'middle',
+        background: colors[type] || '#4b5563'
+      };
+    }
+  };
+
+  return (
+    <>
+      <button 
+        style={styles.trigger} 
+        onClick={() => setIsOpen(true)}
+        onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+        onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+      >
+        📖 游戏帮助
+      </button>
+
+      {isOpen && (
+        <div style={styles.overlay} onClick={(e) => e.target === e.currentTarget && setIsOpen(false)}>
+          <div style={styles.card}>
+            <div style={styles.tabHeader}>
+              <button style={styles.tabBtn(activeTab === 'rules')} onClick={() => setActiveTab('rules')}>规则流程</button>
+              <button style={styles.tabBtn(activeTab === 'roles')} onClick={() => setActiveTab('roles')}>角色图鉴 (15)</button>
+            </div>
+            <div style={styles.content}>
+              {activeTab === 'rules' ? (
+                <div>
+                  <h3 style={{marginTop:0, borderBottom:'1px solid #374151', paddingBottom:'10px', color:'#fcd34d'}}>⚖️ 权谋决战规则</h3>
+                  <p><strong>1. [cite_start]胜利条件 [cite: 16-18]</strong></p>
+                  <ul style={{paddingLeft:'20px', color:'#d1d5db'}}>
+                    <li>🏆 <strong>特殊胜利 (3分)</strong>：达成角色特定条件立即独赢。</li>
+                    <li>🤝 <strong>普通胜利 (1分)</strong>：存活到只剩 2 人时，共同获胜。</li>
+                    <li>☠️ <strong>死局</strong>：连续 3 次僵局，游戏重置。</li>
+                  </ul>
+                  <p><strong>2. [cite_start]核心流程 [cite: 6-12]</strong></p>
+                  <ul style={{paddingLeft:'20px', color:'#d1d5db'}}>
+                    <li>🌙 <strong>夜晚</strong>：发动技能（如观测、同盟）。</li>
+                    <li>☀️ <strong>白天</strong>：公开讨论。</li>
+                    <li>🗳️ <strong>投票</strong>：匿名处决，票多者死。平票通常无效。</li>
+                  </ul>
+                </div>
+              ) : (
+                <div>
+                  <h3 style={{marginTop:0, borderBottom:'1px solid #374151', paddingBottom:'10px', color:'#fcd34d'}}>🎭 全员能力者</h3>
+                  <p style={{fontSize:'12px', color:'#9ca3af', marginBottom:'15px'}}>* N 代表当前游戏总人数，⌈ ⌉ 代表向上取整</p>
+                  {ROLES.map((roleName, index) => {
+                    const config = ROLE_CONFIG[roleName];
+                    if (!config) return null;
+                    return (
+                      <div key={index} style={{marginBottom: '12px', borderBottom:'1px solid #374151', paddingBottom:'8px'}}>
+                        <div style={{fontWeight:'bold', marginBottom:'4px', color:'#fff'}}>
+                          <span style={styles.badge(config.type)}>{config.tag}</span>
+                          {roleName}
+                        </div>
+                        <div style={{fontSize:'14px', color:'#d1d5db', paddingLeft:'4px'}}>{config.desc}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ==========================================
+// 3. 类型定义
+// ==========================================
 interface Player {
   id: number;
   room_code: string;
@@ -15,20 +179,22 @@ interface Player {
 }
 
 interface RoomState {
-    code: string;
-    round_state: string; // "LOBBY", "NIGHT 1", "DAY 1", "GAME OVER"
+  code: string;
+  round_state: string; 
 }
 
 interface GameLog {
-    id: number;
-    message: string;
-    tag: string;
-    viewer_ids: number[] | null;
-    created_at: string;
+  id: number;
+  message: string;
+  tag: string;
+  viewer_ids: number[] | null;
+  created_at: string;
 }
 
+// ==========================================
+// 4. 主页面组件 (Home)
+// ==========================================
 export default function Home() {
-  // --- 2. 状态管理 ---
   const [name, setName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [isInRoom, setIsInRoom] = useState(false);
@@ -37,18 +203,14 @@ export default function Home() {
   const [logs, setLogs] = useState<GameLog[]>([]);
   const [error, setError] = useState('');
 
-  // 游戏操作状态
   const [selectedTargetId, setSelectedTargetId] = useState<string>(''); 
   const [hasActed, setHasActed] = useState(false); 
   const [hasVoted, setHasVoted] = useState(false); 
   const [actionLoading, setActionLoading] = useState(false);
 
-  // --- 3. 辅助工具函数 ---
   const getMyPlayer = () => players.find(p => p.name === name);
-  const getMyRole = () => getMyPlayer()?.role;
   const isHost = getMyPlayer()?.is_host;
   
-  // 角色技能映射
   const getActionType = (role: string, roundState: string) => {
       const roundNum = parseInt(roundState.split(' ')[1]) || 1;
       switch (role) {
@@ -63,7 +225,6 @@ export default function Home() {
       }
   };
 
-  // --- 4. 数据监听 ---
   const fetchLogs = async (code: string) => {
       const { data } = await supabase.from('game_logs').select('*').eq('room_code', code).order('created_at', { ascending: false });
       if (data) setLogs(data as GameLog[]);
@@ -89,7 +250,6 @@ export default function Home() {
     return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); supabase.removeChannel(ch3); };
   }, [isInRoom, roomCode]);
 
-  // --- 5. 交互逻辑 ---
   const handleStartGame = async () => {
       setError('');
       if (players.length < 2) return setError('人数不足 2 人'); 
@@ -150,13 +310,9 @@ export default function Home() {
       setRoomCode(code); setIsInRoom(true); fetchPlayers(code); fetchRoomState(code); fetchLogs(code);
   };
 
-  // --- 6. 视图组件 ---
-
   const renderGame = () => {
-    // --- 游戏结束画面 (修复版：显示获胜原因) ---
     if (roomState?.round_state === 'GAME OVER') {
         const alivePlayers = players.filter(p => p.is_alive);
-        // 🔍 获取最后一条公开日志，作为胜利宣言
         const winLog = logs.find(l => l.tag === 'PUBLIC' && (l.message.includes('获胜') || l.message.includes('结束') || l.message.includes('🎉')));
         
         return (
@@ -164,14 +320,11 @@ export default function Home() {
                 <h1 className="text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-red-500 mb-6">
                     🏆 游戏结束
                 </h1>
-                
-                {/* 新增：显示获胜公告 */}
                 <div className="bg-yellow-900/30 border border-yellow-600 p-4 rounded-lg mb-8">
                     <p className="text-xl text-yellow-200 font-bold">
                         {winLog ? winLog.message : '游戏已结束'}
                     </p>
                 </div>
-
                 <div className="bg-gray-800 p-8 rounded-xl mb-8 border border-gray-700">
                     <h3 className="text-2xl text-gray-300 mb-6 font-bold">最终幸存者名单</h3>
                     {alivePlayers.length > 0 ? (
@@ -187,11 +340,7 @@ export default function Home() {
                         <p className="text-red-400 text-xl">无人生还...</p>
                     )}
                 </div>
-
-                <button 
-                    onClick={() => window.location.reload()} 
-                    className="bg-gray-700 hover:bg-gray-600 text-white px-8 py-3 rounded-full font-bold transition transform hover:scale-105"
-                >
+                <button onClick={() => window.location.reload()} className="bg-gray-700 hover:bg-gray-600 text-white px-8 py-3 rounded-full font-bold transition transform hover:scale-105">
                     返回大厅 (Reload)
                 </button>
             </div>
@@ -206,7 +355,6 @@ export default function Home() {
 
     return (
         <div className="w-full max-w-lg bg-gray-800 p-6 rounded-xl shadow-2xl space-y-6 border border-gray-700">
-            {/* 顶部：回合状态 */}
             <div className="border-b border-gray-700 pb-4 text-center">
                 <h2 className={`text-4xl font-extrabold tracking-wider animate-pulse ${isNight ? 'text-red-500' : 'text-yellow-400'}`}>
                     {roomState?.round_state}
@@ -214,7 +362,6 @@ export default function Home() {
                 <p className="text-gray-400 text-sm mt-2">存活人数: {alivePlayers.length}</p>
             </div>
 
-            {/* 新增: 个人状态卡片 (始终显示) */}
             <div className="bg-gray-900 p-4 rounded-lg border border-gray-600 flex justify-between items-center shadow-md">
                 <div>
                     <p className="text-xs text-gray-500 uppercase font-bold tracking-wider">当前玩家</p>
@@ -228,11 +375,8 @@ export default function Home() {
                 </div>
             </div>
 
-            {/* 核心游戏区域 (根据死活判定) */}
             {me?.is_alive ? (
-                /* === 存活玩家界面 === */
                 isNight ? (
-                    /* 夜晚界面 */
                     <div className="space-y-4">
                         {actionType ? (
                             <div className="bg-gray-900 p-5 rounded-lg border border-gray-600 shadow-md">
@@ -258,9 +402,7 @@ export default function Home() {
                         )}
                     </div>
                 ) : (
-                    /* 白天界面 */
                     <div className="space-y-6">
-                        {/* 公告栏 */}
                         <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 max-h-52 overflow-y-auto shadow-inner">
                             <h3 className="text-gray-400 font-bold mb-2 sticky top-0 bg-gray-900 pb-2 border-b border-gray-800">📢 公告</h3>
                             {myLogs.length === 0 ? <p className="text-gray-600 text-sm py-4 text-center">暂无消息...</p> : 
@@ -272,7 +414,6 @@ export default function Home() {
                                 ))
                             }
                         </div>
-                        {/* 投票区 */}
                         <div className="bg-gray-800 p-5 rounded-lg border border-gray-600 shadow-lg">
                             <h3 className="text-lg font-bold text-yellow-500 mb-4">🗳️ 投票处决</h3>
                             {hasVoted ? (
@@ -293,7 +434,6 @@ export default function Home() {
                     </div>
                 )
             ) : (
-                /* === 死亡玩家界面 === */
                 <div className="bg-red-950/40 border-2 border-red-900/50 p-6 rounded-xl text-center space-y-4 animate-in fade-in duration-500">
                     <div className="text-6xl">👻</div>
                     <h3 className="text-2xl font-bold text-red-500">你已出局</h3>
@@ -301,7 +441,6 @@ export default function Home() {
                         你无法再参与投票或发动技能。<br/>
                         请保持沉默，静待游戏结果。
                     </p>
-                    {/* 死亡玩家依然可以看到公告 */}
                     {!isNight && (
                         <div className="bg-gray-900/50 p-4 rounded text-left max-h-40 overflow-y-auto mt-4 border border-red-900/30">
                             <p className="text-xs text-gray-500 mb-2">历史记录:</p>
@@ -311,7 +450,6 @@ export default function Home() {
                 </div>
             )}
 
-            {/* 房主控制区 (无论生死，始终可见，防止游戏死锁) */}
             {isHost && (
                 <div className="mt-8 border-t border-gray-700 pt-6">
                     <p className="text-xs text-gray-500 mb-2 text-center">房主控制面板 (上帝视角)</p>
@@ -326,9 +464,9 @@ export default function Home() {
     );
   };
 
-  // --- 7. 大厅视图 ---
   if (!isInRoom) return (
       <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-4 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-gray-800 via-gray-950 to-black">
+        <GameManual />
         <h1 className="text-5xl font-bold mb-10 text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-red-600 drop-shadow-md">权谋决战</h1>
         <div className="bg-gray-900 p-8 rounded-xl shadow-2xl w-full max-w-md space-y-6 border border-gray-800">
             <div><label className="text-xs text-gray-400 ml-1 mb-1 block">昵称</label><input className="w-full p-4 rounded-lg bg-gray-800 border border-gray-700 focus:border-blue-500 outline-none" placeholder="输入你的名字" value={name} onChange={e=>setName(e.target.value)} /></div>
@@ -342,6 +480,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
+        <GameManual />
         {roomState?.round_state === 'LOBBY' ? (
             <div className="w-full max-w-md text-center bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
                 <h1 className="text-3xl font-bold mb-6 text-yellow-500">等待大厅</h1>
