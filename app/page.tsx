@@ -11,7 +11,7 @@ interface Player {
   is_alive: boolean;
   is_host: boolean;
   role: string | null;
-  flags: any; // V0.5 新增: 方便前端读取 flag (如被禁言)
+  flags: any; // 允许任意格式的 flag
 }
 
 interface RoomState {
@@ -35,12 +35,12 @@ export default function Home() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [error, setError] = useState('');
-  const [logs, setLogs] = useState<GameLog[]>([]); // V0.5 新增: 日志列表
+  const [logs, setLogs] = useState<GameLog[]>([]);
 
   // 行动与投票状态
   const [selectedTargetId, setSelectedTargetId] = useState<string>(''); 
   const [hasActed, setHasActed] = useState(false); 
-  const [hasVoted, setHasVoted] = useState(false); // V0.5 新增: 是否已投票
+  const [hasVoted, setHasVoted] = useState(false); 
   const [actionLoading, setActionLoading] = useState(false);
 
   // --- 辅助函数 ---
@@ -58,7 +58,7 @@ export default function Home() {
       }
   };
 
-  // --- V0.5 新增: 获取日志 ---
+  // --- 获取数据 ---
   const fetchLogs = async (code: string) => {
       const { data } = await supabase
         .from('game_logs')
@@ -68,7 +68,17 @@ export default function Home() {
       if (data) setLogs(data as GameLog[]);
   };
 
-  // --- 核心功能: 提交技能 (夜晚) ---
+  const fetchPlayers = async (code: string) => {
+      const { data } = await supabase.from('players').select('*').eq('room_code', code).order('id');
+      if (data) setPlayers(data as Player[]);
+  };
+
+  const fetchRoomState = async (code: string) => {
+      const { data } = await supabase.from('rooms').select('code, round_state').eq('code',code).single();
+      if (data) setRoomState(data as RoomState);
+  };
+
+  // --- 提交技能 (夜晚) ---
   const handleSubmitAction = async () => {
       const me = getMyPlayer();
       if (!me || !me.role) return;
@@ -87,12 +97,11 @@ export default function Home() {
       } catch (err) { setError('出错请重试'); } finally { setActionLoading(false); }
   };
 
-  // --- V0.5 核心: 提交投票 (白天) ---
+  // --- 提交投票 (白天) ---
   const handleSubmitVote = async () => {
       const me = getMyPlayer();
       if (!me) return;
       
-      // 这里的 targetId 为空则代表弃票
       const target = selectedTargetId ? parseInt(selectedTargetId) : null;
 
       setActionLoading(true);
@@ -111,7 +120,7 @@ export default function Home() {
       } finally { setActionLoading(false); }
   };
 
-  // --- 核心功能: 房主结算 (夜晚->白天) ---
+  // --- 房主结算 (夜晚->白天) ---
   const handleProcessNight = async () => {
       if (!confirm('确定要结束夜晚并进行结算吗？')) return;
       try {
@@ -141,43 +150,38 @@ export default function Home() {
       if(error) return setError(error.message);
       setRoomCode(code); setIsInRoom(true); fetchPlayers(code); fetchRoomState(code); fetchLogs(code);
   };
-  const fetchPlayers = async (code:string) => {
-      const {data} = await supabase.from('players').select('*').eq('room_code', code).order('id');
-      if(data) setPlayers(data as Player[]);
-  };
-  const fetchRoomState = async (code:string) => {
-      const {data} = await supabase.from('rooms').select('code, round_state').eq('code',code).single();
-      if(data) setRoomState(data as RoomState);
-  };
 
+  // --- 监听 ---
   useEffect(() => {
     if (!isInRoom || !roomCode) return;
-    // 监听房间状态变化
     const ch1 = supabase.channel('room').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}`}, (payload) => {
         setRoomState(payload.new as RoomState);
-        setHasActed(false); // 重置行动
-        setHasVoted(false); // 重置投票
-        fetchLogs(roomCode); // 刷新日志
-        fetchPlayers(roomCode); // 刷新玩家状态(flags)
+        setHasActed(false); 
+        setHasVoted(false); 
+        fetchLogs(roomCode); 
+        fetchPlayers(roomCode);
     }).subscribe();
-    // 监听日志更新 (实时显示公告)
-    const ch3 = supabase.channel('logs').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'game_logs', filter: `room_code=eq.${roomCode}`}, () => {
+    
+    const ch2 = supabase.channel('logs').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'game_logs', filter: `room_code=eq.${roomCode}`}, () => {
         fetchLogs(roomCode);
     }).subscribe();
     
-    return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch3); };
+    // 监听玩家状态变化 (V0.5补充: 确保玩家被禁言后能立刻刷新)
+    const ch3 = supabase.channel('players').on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${roomCode}`}, () => {
+        fetchPlayers(roomCode);
+    }).subscribe();
+    
+    return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); supabase.removeChannel(ch3); };
   }, [isInRoom, roomCode]);
 
-  // --- V0.5 视图: 白天界面 ---
+  // --- 视图渲染 ---
   const renderDay = () => {
     const me = getMyPlayer();
-    // 过滤日志: 公开的 OR 专门发给我的(如查验结果)
     const myLogs = logs.filter(l => l.tag === 'PUBLIC' || (me && l.viewer_ids?.includes(me.id)));
     const alivePlayers = players.filter(p => p.is_alive);
 
     return (
         <div className="space-y-6">
-            {/* 1. 公告栏 */}
             <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 max-h-48 overflow-y-auto">
                 <h3 className="text-gray-400 font-bold mb-2 sticky top-0 bg-gray-900">📢 游戏公告</h3>
                 {myLogs.length === 0 ? <p className="text-gray-500 text-sm">暂无消息...</p> : 
@@ -190,7 +194,6 @@ export default function Home() {
                 }
             </div>
 
-            {/* 2. 投票区 */}
             {me?.is_alive ? (
                  <div className="bg-gray-800 p-4 rounded-lg border border-gray-600">
                     <h3 className="text-lg font-bold text-yellow-500 mb-3">🗳️ 投票处决</h3>
@@ -198,16 +201,13 @@ export default function Home() {
                         <div className="text-green-400 font-bold py-2">✅ 已投票，等待结算...</div>
                     ) : (
                         <div className="space-y-3">
-                             {/* 提示被禁票 */}
-                             {me.flags?.cannot_vote && (
-                                 <p className="text-red-400 text-sm font-bold bg-red-900/50 p-2 rounded">⛔ 你被【投票阻断者】限制，今日不可投票。</p>
-                             )}
+                             {me.flags?.cannot_vote && <p className="text-red-400 text-sm font-bold bg-red-900/50 p-2 rounded">⛔ 你被【投票阻断者】限制，今日不可投票。</p>}
                             
                             <select 
                                 className="w-full p-3 rounded bg-gray-700 text-white border border-gray-500"
                                 value={selectedTargetId}
                                 onChange={(e) => setSelectedTargetId(e.target.value)}
-                                disabled={!!me.flags?.cannot_vote} // 如果被禁票，直接禁用下拉框
+                                disabled={!!me.flags?.cannot_vote} 
                             >
                                 <option value="">-- 选择投票对象 (不选视为弃票) --</option>
                                 {alivePlayers.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
@@ -229,7 +229,6 @@ export default function Home() {
                 <div className="text-gray-500 text-center p-4">你已出局，无法投票。</div>
             )}
             
-            {/* 房主按钮: 暂时只是占位，V0.6做结算 */}
             {isHost && (
                 <div className="mt-4 pt-4 border-t border-gray-600">
                     <button className="w-full bg-gray-700 text-gray-400 p-3 rounded border border-dashed border-gray-500">
@@ -253,14 +252,12 @@ export default function Home() {
                 <p className="text-gray-400 mt-2">存活: {players.filter(p=>p.is_alive).length} 人</p>
             </div>
 
-            {/* 渲染: 夜晚视图 OR 白天视图 */}
             {isNight ? (
                 <>
                     <div className="bg-gray-700 p-4 rounded border-l-4 border-yellow-500">
                         <p className="text-sm text-gray-400">身份</p>
                         <p className="text-2xl font-bold text-yellow-300">{getMyRole() || '...'}</p>
                     </div>
-                    {/* (保留原本的夜晚UI逻辑) */}
                     {getMyRole() && getActionType(getMyRole()!) && (
                         <div className="bg-gray-900 p-4 rounded-lg border border-gray-600">
                             <h3 className="text-lg font-bold text-purple-400 mb-3">技能发动</h3>
@@ -286,7 +283,6 @@ export default function Home() {
     );
   };
 
-  // --- 登录视图 (不变) ---
   if (!isInRoom) return (
       <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
         <h1 className="text-4xl font-bold mb-8 text-yellow-500">权谋决战</h1>
@@ -309,10 +305,10 @@ export default function Home() {
             <div className="w-full max-w-md text-center">
                 <div className="bg-gray-800 p-6 rounded mb-4"><p className="text-5xl font-mono font-bold text-blue-400">{roomCode}</p></div>
                 <div className="grid grid-cols-2 gap-3 mb-6">{players.map(p=>(<div key={p.id} className="bg-gray-700 p-2 rounded">{p.name} {p.is_host && '👑'}</div>))}</div>
-                {players.find(p=>p.name===name)?.is_host && <button onClick={handleStartGame} className="bg-red-600 p-3 rounded w-full font-bold">开始游戏 (2人+)</button>}
+                {players.find(p=>p.name===name)?.is_host && <button onClick={createRoom} className="bg-red-600 p-3 rounded w-full font-bold">开始游戏 (2人+)</button>}
             </div>
         ) : renderGame()}
         {error && <p className="text-red-500 mt-4 bg-gray-800 p-2 rounded">{error}</p>}
     </div>
   );
-}
+} // <--- 关键！就是这个括号之前缺了！
