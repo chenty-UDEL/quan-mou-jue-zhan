@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
-// --- 1. 类型定义 ---
+// --- 1. 类型定义 (修复了你之前的报错) ---
 interface Player {
   id: number;
   room_code: string;
@@ -11,7 +11,7 @@ interface Player {
   is_alive: boolean;
   is_host: boolean;
   role: string | null;
-  flags: any; // 存放临时状态 (如: {cannot_vote: true, is_protected: true})
+  flags: any; // 存放临时状态 (如: {cannot_vote: true, ally_id: 123})
 }
 
 interface RoomState {
@@ -49,14 +49,23 @@ export default function Home() {
   const getMyRole = () => getMyPlayer()?.role;
   const isHost = getMyPlayer()?.is_host;
   
-  // 角色技能映射表
-  const getActionType = (role: string) => {
+  // V0.7 更新: 角色技能映射表 (根据当前回合数判断技能是否可用)
+  const getActionType = (role: string, roundState: string) => {
+      // 解析当前回合数 (例如 "NIGHT 1" -> 1)
+      const roundNum = parseInt(roundState.split(' ')[1]) || 1;
+      
       switch (role) {
+          // A. 常驻技能 (每晚可用)
           case '技能观测者': return 'check';
           case '利他守护者': return 'protect';
           case '沉默制裁者': return 'silence';
           case '投票阻断者': return 'block_vote';
-          // 如果有杀手角色: case '刺客': return 'kill';
+          
+          // B. 首夜限定技能 (只有 NIGHT 1 可用)
+          case '同盟者': return roundNum === 1 ? 'ally_bind' : null;
+          case '影子胜者': return roundNum === 1 ? 'shadow_bind' : null;
+          case '命运复制者': return roundNum === 1 ? 'copy_fate' : null; 
+          
           default: return null; 
       }
   };
@@ -121,8 +130,9 @@ export default function Home() {
   // [玩家] 提交夜晚技能
   const handleSubmitAction = async () => {
       const me = getMyPlayer();
-      if (!me || !me.role) return;
-      const type = getActionType(me.role);
+      if (!me || !me.role || !roomState) return;
+      
+      const type = getActionType(me.role, roomState.round_state);
       if (!selectedTargetId) return setError('请先选择目标');
 
       setActionLoading(true);
@@ -291,7 +301,7 @@ export default function Home() {
 
   // B. 主游戏容器 (状态分发)
   const renderGame = () => {
-    // --- V0.6 新增: 游戏结束画面 ---
+    // --- 游戏结束画面 ---
     if (roomState?.round_state === 'GAME OVER') {
         const alivePlayers = players.filter(p => p.is_alive);
         return (
@@ -327,7 +337,9 @@ export default function Home() {
     }
 
     const isNight = roomState?.round_state.startsWith('NIGHT');
-    
+    const myRole = getMyRole();
+    const actionType = (isNight && myRole && roomState) ? getActionType(myRole, roomState.round_state) : null;
+
     return (
         <div className="w-full max-w-lg bg-gray-800 p-6 rounded-xl shadow-2xl space-y-6 border border-gray-700">
             {/* 顶部状态栏 */}
@@ -347,13 +359,13 @@ export default function Home() {
                     <div className="bg-gray-700/50 p-5 rounded-lg border-l-4 border-yellow-500 flex justify-between items-center">
                         <div>
                             <p className="text-xs text-gray-400 uppercase">你的身份</p>
-                            <p className="text-2xl font-bold text-yellow-300">{getMyRole() || '...'}</p>
+                            <p className="text-2xl font-bold text-yellow-300">{myRole || '...'}</p>
                         </div>
                         <div className="text-4xl opacity-20">🎭</div>
                     </div>
                     
                     {/* 技能区 */}
-                    {getMyRole() && getActionType(getMyRole()!) ? (
+                    {actionType ? (
                         <div className="bg-gray-900 p-5 rounded-lg border border-gray-600 shadow-md">
                             <h3 className="text-lg font-bold text-purple-400 mb-4 flex items-center gap-2">
                                 🔮 <span>技能发动</span>
@@ -383,7 +395,9 @@ export default function Home() {
                             )}
                         </div>
                     ) : (
-                        <div className="text-center text-gray-500 italic py-4">你今晚没有可用的主动技能。</div>
+                        <div className="text-center text-gray-500 italic py-4">
+                            {myRole === '同盟者' || myRole === '影子胜者' ? '你的技能只能在第一夜发动。' : '你今晚没有可用的主动技能。'}
+                        </div>
                     )}
                     
                     {/* 房主强制结算 */}
