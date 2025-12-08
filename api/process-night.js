@@ -26,9 +26,9 @@ export default async function handler(req, res) {
 
     players.forEach(p => {
         updates[p.id] = { 
-            id: p.id, 
-            flags: {}, // 清空旧状态
-            is_alive: p.is_alive 
+            ...p, // <--- 【关键修复】保留玩家原有的名字、房间号等所有信息
+            flags: {}, // 重置每晚的标记
+            // 注意：这里我们只重置 flags，不重置 is_alive，除非后面有逻辑将其改为 false
         };
     });
 
