@@ -153,14 +153,27 @@ export default function Home() {
   // --- 6. 视图组件 ---
 
   const renderGame = () => {
-    // 游戏结束视图
+    // --- 游戏结束画面 (修复版：显示获胜原因) ---
     if (roomState?.round_state === 'GAME OVER') {
         const alivePlayers = players.filter(p => p.is_alive);
+        // 🔍 获取最后一条公开日志，作为胜利宣言
+        const winLog = logs.find(l => l.tag === 'PUBLIC' && (l.message.includes('获胜') || l.message.includes('结束') || l.message.includes('🎉')));
+        
         return (
             <div className="w-full max-w-2xl bg-gray-900 p-10 rounded-xl text-center border-4 border-yellow-600 shadow-2xl">
-                <h1 className="text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-red-500 mb-8">🏆 游戏结束</h1>
+                <h1 className="text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-red-500 mb-6">
+                    🏆 游戏结束
+                </h1>
+                
+                {/* 新增：显示获胜公告 */}
+                <div className="bg-yellow-900/30 border border-yellow-600 p-4 rounded-lg mb-8">
+                    <p className="text-xl text-yellow-200 font-bold">
+                        {winLog ? winLog.message : '游戏已结束'}
+                    </p>
+                </div>
+
                 <div className="bg-gray-800 p-8 rounded-xl mb-8 border border-gray-700">
-                    <h3 className="text-2xl text-gray-300 mb-6 font-bold">最终幸存者</h3>
+                    <h3 className="text-2xl text-gray-300 mb-6 font-bold">最终幸存者名单</h3>
                     {alivePlayers.length > 0 ? (
                         <div className="flex flex-wrap justify-center gap-4">
                             {alivePlayers.map(p => (
@@ -170,9 +183,17 @@ export default function Home() {
                                 </div>
                             ))}
                         </div>
-                    ) : <p className="text-red-400 text-xl">无人生还...</p>}
+                    ) : (
+                        <p className="text-red-400 text-xl">无人生还...</p>
+                    )}
                 </div>
-                <button onClick={() => window.location.reload()} className="bg-gray-700 hover:bg-gray-600 text-white px-8 py-3 rounded-full font-bold transition transform hover:scale-105">返回大厅</button>
+
+                <button 
+                    onClick={() => window.location.reload()} 
+                    className="bg-gray-700 hover:bg-gray-600 text-white px-8 py-3 rounded-full font-bold transition transform hover:scale-105"
+                >
+                    返回大厅 (Reload)
+                </button>
             </div>
         );
     }

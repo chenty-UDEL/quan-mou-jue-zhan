@@ -1,84 +1,72 @@
+// api/start-game.js - V0.7.1 (修复：彻底清空 flags 防止连胜继承)
 import { createClient } from '@supabase/supabase-js';
 
-// 使用 Vercel 环境变量中的 Service Key (超级管理员权限)
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL, 
     process.env.SUPABASE_SERVICE_KEY
 );
 
-// V0.2 角色配置
-const V02_ROLES = [
-    '技能观测者', 
-    '利他守护者', 
-    '沉默制裁者', 
-    '投票阻断者', 
-    '双票使者',   
-    '三人王者', 
-    // 为了支持更多人，我们可以重复添加或者添加更多角色
-    '平民', '平民', '平民', '平民', '平民', '平民', '平民'  
+// 完整的角色列表 (15个)
+const ROLES = [
+    '技能观测者', '利他守护者', '投票阻断者', '沉默制裁者',
+    '同盟者', '减票守护者', '双票使者', '平票终结者',
+    '影子胜者', '集票胜者', '三人王者', '免票胜者',
+    '平票赢家', '普通玩家', '普通玩家' 
+    // 如果人数多于角色数，剩下的都是普通玩家
 ];
 
-const shuffle = (array) => {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
-    }
-};
-
 export default async function handler(req, res) {
-    if (req.method !== 'POST') {
-        return res.status(405).json({ message: 'Method Not Allowed' });
-    }
+    if (req.method !== 'POST') return res.status(405).json({ message: 'Method Not Allowed' });
 
     const { roomCode } = req.body;
-
-    // 1. 获取玩家列表
-    const { data: players, error: playersError } = await supabase
-        .from('players')
-        .select('*')
-        .eq('room_code', roomCode);
-
-    if (playersError || !players) {
-        return res.status(500).json({ error: playersError?.message || '无法获取玩家列表' });
+    
+    // 1. 获取房间内玩家
+    const { data: players, error } = await supabase.from('players').select('*').eq('room_code', roomCode);
+    
+    if (error || !players || players.length < 2) {
+        return res.status(400).json({ message: '无法开始游戏：人数不足或房间错误' });
     }
 
-    const numPlayers = players.length;
-
-    // --- 修改点：验证人数改为 2 人 ---
-    if (numPlayers < 2) {
-        return res.status(400).json({ message: '人数不足 2 人，无法开始游戏。' });
+    // 2. 随机洗牌算法 (Fisher-Yates)
+    const shuffledRoles = [...ROLES];
+    // 根据人数扩展角色池 (如果人多，补平民)
+    while (shuffledRoles.length < players.length) {
+        shuffledRoles.push('普通玩家');
+    }
+    // 打乱数组
+    for (let i = shuffledRoles.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffledRoles[i], shuffledRoles[j]] = [shuffledRoles[j], shuffledRoles[i]];
     }
 
-    // 2. 准备角色池并洗牌
-    // 确保角色池够用
-    let availableRoles = [...V02_ROLES];
-    if (numPlayers > availableRoles.length) {
-         // 如果人太多，角色不够，补充平民
-         const diff = numPlayers - availableRoles.length;
-         for(let i=0; i<diff; i++) availableRoles.push('平民');
-    }
-
-    let rolesToAssign = availableRoles.slice(0, numPlayers); 
-    shuffle(rolesToAssign);
-
+    // 3. 分配角色并重置状态
     const updates = players.map((player, index) => ({
-    ...player, // <--- 【关键修复】这行代码会保留原有的 name, room_code 等所有信息
-    role: rolesToAssign[index],
-    is_alive: true,
+        id: player.id,
+        room_code: roomCode,
+        name: player.name, // 必须带上，否则可能会报错
+        role: shuffledRoles[index],
+        is_alive: true,
+        // 【关键修复】必须重置为空对象，防止"连续平票"等计数器带入下一局
+        flags: {} 
     }));
 
-    // 3. 更新玩家角色
-    const { error: updateError } = await supabase.from('players').upsert(updates);
+    // 4. 更新数据库
     
-    // 4. 更新房间状态
-    const { error: roomUpdateError } = await supabase
-        .from('rooms')
-        .update({ round_state: 'NIGHT 1', roles_in_play: rolesToAssign })
-        .eq('code', roomCode);
+    // 4.1 更新玩家表
+    const { error: updateError } = await supabase.from('players').upsert(updates);
+    if (updateError) return res.status(500).json({ message: '分发角色失败', error: updateError.message });
 
-    if (updateError || roomUpdateError) {
-        return res.status(500).json({ error: updateError?.message || roomUpdateError?.message });
-    }
+    // 4.2 清空旧数据 (投票记录、行动记录、日志)
+    await supabase.from('votes').delete().eq('room_code', roomCode);
+    await supabase.from('night_actions').delete().eq('room_code', roomCode);
+    await supabase.from('game_logs').delete().eq('room_code', roomCode);
 
-    res.status(200).json({ success: true, message: '游戏已开始' });
+    // 4.3 更新房间状态 -> 进入第一夜
+    await supabase.from('rooms').update({ 
+        round_state: 'NIGHT 1',
+        logs: [], // 清空 JSON 缓存
+        votes_received: {} 
+    }).eq('code', roomCode);
+
+    res.status(200).json({ success: true, message: '游戏开始！' });
 }

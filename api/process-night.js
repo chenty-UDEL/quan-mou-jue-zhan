@@ -1,4 +1,4 @@
-// api/process-night.js - V0.7 升级版 (支持同盟/影子/沉默不禁技能)
+// api/process-night.js - V0.7.1 (修复日志显示名字)
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -19,28 +19,26 @@ export default async function handler(req, res) {
     let updates = {}; 
     let logs = [];
     
-    // 2. 初始化 updates 对象
-    // 【关键修改】我们需要保留之前的 flags (因为同盟/影子是永久绑定的)
-    // 但必须清除"临时状态" (如今晚的守护、禁言)
+    // 2. 初始化 updates (保留永久状态，移除临时状态)
     players.forEach(p => {
         const currentFlags = p.flags || {};
-        
-        // 创建一个新的 flags 对象，保留永久状态，移除临时状态
         const newFlags = { ...currentFlags };
-        delete newFlags.is_protected; // 移除昨晚的守护
-        delete newFlags.is_silenced;  // 移除昨晚的禁言
-        delete newFlags.cannot_vote;  // 移除昨晚的禁票
+        delete newFlags.is_protected; 
+        delete newFlags.is_silenced;  
+        delete newFlags.cannot_vote;  
 
         updates[p.id] = { 
-            ...p, // 保留名字、角色等基础信息
+            ...p, 
             flags: newFlags
         };
     });
 
+    // 辅助函数：根据ID获取名字
+    const getName = (id) => updates[id]?.name || `未知玩家(${id})`;
+
     // --- 3. 核心结算逻辑 ---
 
     // A. 限制类 (沉默/禁票)
-    // 逻辑：只给目标挂状态，不影响目标发动技能
     actions.filter(a => ['silence', 'block_vote'].includes(a.action_type)).forEach(action => {
         const target = updates[action.target_id];
         if (target) {
@@ -68,22 +66,25 @@ export default async function handler(req, res) {
         const target = updates[action.target_id];
         if (target) {
             target.flags.is_protected = true;
+            // 【修正】这里把 action.target_id 改成了 getName(action.target_id)
             logs.push({ 
-                message: `你成功守护了玩家 ${action.target_id}，他明天将免疫投票。`, 
+                message: `你成功守护了玩家【${getName(action.target_id)}】，他明天将免疫投票。`, 
                 viewer_ids: [action.actor_id], 
                 tag: 'PRIVATE' 
             });
         }
     });
 
-    // C. 永久绑定类 (同盟/影子) - 这些技能通常只在第一夜发动
+    // C. 永久绑定类 (同盟/影子)
     actions.filter(a => ['ally_bind', 'shadow_bind'].includes(a.action_type)).forEach(action => {
         const actor = updates[action.actor_id];
         if (actor) {
+            const targetName = getName(action.target_id); // 获取目标名字
+
             if (action.action_type === 'ally_bind') {
                 actor.flags.ally_id = action.target_id;
                 logs.push({ 
-                    message: `契约已成！你已与玩家 ${action.target_id} 结为同盟。`, 
+                    message: `契约已成！你已与玩家【${targetName}】结为同盟。`, 
                     viewer_ids: [action.actor_id], 
                     tag: 'PRIVATE' 
                 });
@@ -91,7 +92,7 @@ export default async function handler(req, res) {
             if (action.action_type === 'shadow_bind') {
                 actor.flags.shadow_target_id = action.target_id;
                 logs.push({ 
-                    message: `目标锁定！你已选定玩家 ${action.target_id} 为你的影子目标。`, 
+                    message: `目标锁定！你已选定玩家【${targetName}】为你的影子目标。`, 
                     viewer_ids: [action.actor_id], 
                     tag: 'PRIVATE' 
                 });
@@ -133,11 +134,10 @@ export default async function handler(req, res) {
         await supabase.from('game_logs').insert(logsPayload);
     }
     
-    // 切换到白天 (尝试解析当前回合数)
+    // 切换到白天
     const { data: currentRoom } = await supabase.from('rooms').select('round_state').eq('code', roomCode).single();
     let nextRoundStr = 'DAY 1';
     if (currentRoom) {
-        // 如果是 NIGHT 1 -> DAY 1, NIGHT 2 -> DAY 2
         const roundNum = parseInt(currentRoom.round_state.split(' ')[1]) || 1;
         nextRoundStr = `DAY ${roundNum}`;
     }
