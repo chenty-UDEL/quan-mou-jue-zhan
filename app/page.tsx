@@ -11,7 +11,7 @@ interface Player {
   is_alive: boolean;
   is_host: boolean;
   role: string | null;
-  flags: any; // 允许任意格式的 flag
+  flags: any; 
 }
 
 interface RoomState {
@@ -60,11 +60,7 @@ export default function Home() {
 
   // --- 获取数据 ---
   const fetchLogs = async (code: string) => {
-      const { data } = await supabase
-        .from('game_logs')
-        .select('*')
-        .eq('room_code', code)
-        .order('created_at', { ascending: false });
+      const { data } = await supabase.from('game_logs').select('*').eq('room_code', code).order('created_at', { ascending: false });
       if (data) setLogs(data as GameLog[]);
   };
 
@@ -101,9 +97,7 @@ export default function Home() {
   const handleSubmitVote = async () => {
       const me = getMyPlayer();
       if (!me) return;
-      
       const target = selectedTargetId ? parseInt(selectedTargetId) : null;
-
       setActionLoading(true);
       try {
           const res = await fetch('/api/submit-vote', {
@@ -113,11 +107,8 @@ export default function Home() {
           });
           const result = await res.json();
           if (!res.ok) throw new Error(result.message || '投票失败');
-          
           setHasVoted(true); setError(''); 
-      } catch (err: any) { 
-          setError(err.message); 
-      } finally { setActionLoading(false); }
+      } catch (err: any) { setError(err.message); } finally { setActionLoading(false); }
   };
 
   // --- 房主结算 (夜晚->白天) ---
@@ -130,6 +121,19 @@ export default function Home() {
               body: JSON.stringify({ roomCode }),
           });
       } catch (err) { alert('结算请求失败'); }
+  };
+
+  // --- 开始游戏 (房主) ---
+  const handleStartGame = async () => {
+      setError('');
+      if (players.length < 2) return setError('人数不足 2 人'); 
+      try {
+          await fetch('/api/start-game', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ roomCode }),
+          });
+      } catch (err: any) { setError(err.message); }
   };
 
   // --- 初始化逻辑 ---
@@ -156,21 +160,10 @@ export default function Home() {
     if (!isInRoom || !roomCode) return;
     const ch1 = supabase.channel('room').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `code=eq.${roomCode}`}, (payload) => {
         setRoomState(payload.new as RoomState);
-        setHasActed(false); 
-        setHasVoted(false); 
-        fetchLogs(roomCode); 
-        fetchPlayers(roomCode);
+        setHasActed(false); setHasVoted(false); fetchLogs(roomCode); fetchPlayers(roomCode);
     }).subscribe();
-    
-    const ch2 = supabase.channel('logs').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'game_logs', filter: `room_code=eq.${roomCode}`}, () => {
-        fetchLogs(roomCode);
-    }).subscribe();
-    
-    // 监听玩家状态变化 (V0.5补充: 确保玩家被禁言后能立刻刷新)
-    const ch3 = supabase.channel('players').on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${roomCode}`}, () => {
-        fetchPlayers(roomCode);
-    }).subscribe();
-    
+    const ch2 = supabase.channel('logs').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'game_logs', filter: `room_code=eq.${roomCode}`}, () => fetchLogs(roomCode)).subscribe();
+    const ch3 = supabase.channel('players').on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${roomCode}`}, () => fetchPlayers(roomCode)).subscribe();
     return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); supabase.removeChannel(ch3); };
   }, [isInRoom, roomCode]);
 
@@ -193,47 +186,26 @@ export default function Home() {
                     ))
                 }
             </div>
-
             {me?.is_alive ? (
                  <div className="bg-gray-800 p-4 rounded-lg border border-gray-600">
                     <h3 className="text-lg font-bold text-yellow-500 mb-3">🗳️ 投票处决</h3>
-                    {hasVoted ? (
-                        <div className="text-green-400 font-bold py-2">✅ 已投票，等待结算...</div>
-                    ) : (
+                    {hasVoted ? <div className="text-green-400 font-bold py-2">✅ 已投票，等待结算...</div> : (
                         <div className="space-y-3">
                              {me.flags?.cannot_vote && <p className="text-red-400 text-sm font-bold bg-red-900/50 p-2 rounded">⛔ 你被【投票阻断者】限制，今日不可投票。</p>}
-                            
-                            <select 
-                                className="w-full p-3 rounded bg-gray-700 text-white border border-gray-500"
-                                value={selectedTargetId}
-                                onChange={(e) => setSelectedTargetId(e.target.value)}
-                                disabled={!!me.flags?.cannot_vote} 
-                            >
+                            <select className="w-full p-3 rounded bg-gray-700 text-white border border-gray-500" value={selectedTargetId} onChange={(e) => setSelectedTargetId(e.target.value)} disabled={!!me.flags?.cannot_vote}>
                                 <option value="">-- 选择投票对象 (不选视为弃票) --</option>
                                 {alivePlayers.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
                             </select>
-                            
-                            <button 
-                                onClick={handleSubmitVote} 
-                                disabled={!!me.flags?.cannot_vote || actionLoading}
-                                className={`w-full p-3 rounded font-bold transition ${
-                                    me.flags?.cannot_vote ? 'bg-gray-600 cursor-not-allowed' : 'bg-yellow-600 hover:bg-yellow-700'
-                                }`}
-                            >
+                            <button onClick={handleSubmitVote} disabled={!!me.flags?.cannot_vote || actionLoading} className={`w-full p-3 rounded font-bold transition ${me.flags?.cannot_vote ? 'bg-gray-600 cursor-not-allowed' : 'bg-yellow-600 hover:bg-yellow-700'}`}>
                                 {actionLoading ? '提交中...' : '确认投票'}
                             </button>
                         </div>
                     )}
                  </div>
-            ) : (
-                <div className="text-gray-500 text-center p-4">你已出局，无法投票。</div>
-            )}
-            
+            ) : <div className="text-gray-500 text-center p-4">你已出局，无法投票。</div>}
             {isHost && (
                 <div className="mt-4 pt-4 border-t border-gray-600">
-                    <button className="w-full bg-gray-700 text-gray-400 p-3 rounded border border-dashed border-gray-500">
-                        (V0.6) 结束投票并处决
-                    </button>
+                    <button className="w-full bg-gray-700 text-gray-400 p-3 rounded border border-dashed border-gray-500">(V0.6) 结束投票并处决</button>
                 </div>
             )}
         </div>
@@ -242,16 +214,12 @@ export default function Home() {
 
   const renderGame = () => {
     const isNight = roomState?.round_state.startsWith('NIGHT');
-    
     return (
         <div className="w-full max-w-lg bg-gray-800 p-6 rounded-lg shadow-2xl space-y-6">
             <div className="border-b border-gray-700 pb-4 text-center">
-                <h2 className={`text-3xl font-extrabold animate-pulse ${isNight ? 'text-red-500' : 'text-yellow-400'}`}>
-                    {roomState?.round_state}
-                </h2>
+                <h2 className={`text-3xl font-extrabold animate-pulse ${isNight ? 'text-red-500' : 'text-yellow-400'}`}>{roomState?.round_state}</h2>
                 <p className="text-gray-400 mt-2">存活: {players.filter(p=>p.is_alive).length} 人</p>
             </div>
-
             {isNight ? (
                 <>
                     <div className="bg-gray-700 p-4 rounded border-l-4 border-yellow-500">
@@ -305,10 +273,13 @@ export default function Home() {
             <div className="w-full max-w-md text-center">
                 <div className="bg-gray-800 p-6 rounded mb-4"><p className="text-5xl font-mono font-bold text-blue-400">{roomCode}</p></div>
                 <div className="grid grid-cols-2 gap-3 mb-6">{players.map(p=>(<div key={p.id} className="bg-gray-700 p-2 rounded">{p.name} {p.is_host && '👑'}</div>))}</div>
-                {players.find(p=>p.name===name)?.is_host && <button onClick={createRoom} className="bg-red-600 p-3 rounded w-full font-bold">开始游戏 (2人+)</button>}
+                {players.find(p=>p.name===name)?.is_host && (
+                    /* ⬇️ 这里修正了 onClick 绑定，之前错写成了 createRoom */
+                    <button onClick={handleStartGame} className="bg-red-600 p-3 rounded w-full font-bold">开始游戏 (2人+)</button>
+                )}
             </div>
         ) : renderGame()}
         {error && <p className="text-red-500 mt-4 bg-gray-800 p-2 rounded">{error}</p>}
     </div>
   );
-} // <--- 关键！就是这个括号之前缺了！
+}
