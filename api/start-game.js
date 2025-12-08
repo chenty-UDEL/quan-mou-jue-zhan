@@ -1,4 +1,4 @@
-// api/start-game.js - V0.7.1 (修复：彻底清空 flags 防止连胜继承)
+// api/start-game.js - V0.8 (完整角色池配置)
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -6,13 +6,34 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_KEY
 );
 
-// 完整的角色列表 (15个)
+// 📜 V0.8 完整角色列表 (15个已实现角色)
+// 包含: 基础类、防御类、干扰类、数值类、特殊胜利类、历史记录类
 const ROLES = [
-    '技能观测者', '利他守护者', '投票阻断者', '沉默制裁者',
-    '同盟者', '减票守护者', '双票使者', '平票终结者',
-    '影子胜者', '集票胜者', '三人王者', '免票胜者',
-    '平票赢家', '普通玩家', '普通玩家' 
-    // 如果人数多于角色数，剩下的都是普通玩家
+    // 1. 基础与主动技能类
+    '技能观测者', 
+    '利他守护者', 
+    '投票阻断者', 
+    '沉默制裁者',
+    '同盟者',       // Night 1 绑定
+
+    // 2. 被动数值与防御类
+    '减票守护者', 
+    '双票使者', 
+
+    // 3. 特殊胜利 - 状态/局面类
+    '三人王者',     // 剩3人赢
+    '集票胜者',     // 得票>2/3赢
+    '平票赢家',     // 平票且在其中赢
+    '影子胜者',     // 前后一回合死赢 (V0.8 重写版)
+
+    // 4. 特殊胜利 - 历史计数器类
+    '平票终结者',   // 连续平票赢
+    '免票胜者',     // 连续0票赢
+    '票数平衡者',   // 连续得票相同赢 (V0.8 新增)
+    '多选胜者',     // 连续投死不同人赢 (V0.8 新增)
+    
+    // 如果房间人数超过15人，下面的会被填充为普通玩家
+    '普通玩家', '普通玩家'
 ];
 
 export default async function handler(req, res) {
@@ -29,25 +50,28 @@ export default async function handler(req, res) {
 
     // 2. 随机洗牌算法 (Fisher-Yates)
     const shuffledRoles = [...ROLES];
-    // 根据人数扩展角色池 (如果人多，补平民)
+    
+    // 如果玩家人数比角色多，补充普通玩家
     while (shuffledRoles.length < players.length) {
         shuffledRoles.push('普通玩家');
     }
-    // 打乱数组
+    
+    // 彻底打乱数组
     for (let i = shuffledRoles.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [shuffledRoles[i], shuffledRoles[j]] = [shuffledRoles[j], shuffledRoles[i]];
     }
 
-    // 3. 分配角色并重置状态
+    // 3. 分配角色并初始化状态
     const updates = players.map((player, index) => ({
         id: player.id,
         room_code: roomCode,
-        name: player.name, // 必须带上，否则可能会报错
+        name: player.name, 
         role: shuffledRoles[index],
         is_alive: true,
-        // 【关键修复】必须重置为空对象，防止"连续平票"等计数器带入下一局
-        flags: {} 
+        death_round: null, // V0.8 新增: 死亡回合重置
+        death_type: null,  // V0.8 新增: 死亡类型重置
+        flags: {}          // 必须重置! 防止上一局的计数器(streak)带入
     }));
 
     // 4. 更新数据库
@@ -56,7 +80,7 @@ export default async function handler(req, res) {
     const { error: updateError } = await supabase.from('players').upsert(updates);
     if (updateError) return res.status(500).json({ message: '分发角色失败', error: updateError.message });
 
-    // 4.2 清空旧数据 (投票记录、行动记录、日志)
+    // 4.2 清空旧数据 (投票、行动、日志)
     await supabase.from('votes').delete().eq('room_code', roomCode);
     await supabase.from('night_actions').delete().eq('room_code', roomCode);
     await supabase.from('game_logs').delete().eq('room_code', roomCode);
@@ -64,7 +88,7 @@ export default async function handler(req, res) {
     // 4.3 更新房间状态 -> 进入第一夜
     await supabase.from('rooms').update({ 
         round_state: 'NIGHT 1',
-        logs: [], // 清空 JSON 缓存
+        logs: [], 
         votes_received: {} 
     }).eq('code', roomCode);
 
